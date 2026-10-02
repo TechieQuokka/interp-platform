@@ -11,6 +11,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class ChannelHubTest {
 
@@ -27,6 +28,8 @@ class ChannelHubTest {
     private fun event(seq: Long) = TranslatedText(sessionId, Lang.KO, seq, "t$seq", System.currentTimeMillis(), System.currentTimeMillis())
 
     private fun counter(name: String) = registry.find(name).counters().sumOf { it.count() }
+
+    private fun replayed(source: String) = registry.find("interp.replay.messages").tag("source", source).counter()?.count() ?: 0.0
 
     @Test
     fun `live listener receives messages in order and duplicates are dropped`() {
@@ -73,7 +76,21 @@ class ChannelHubTest {
         hub.connect(sessionId, Lang.KO, 1, out)
 
         eventually { assertEquals((2L..6L).toList(), out.seqs()) }
-        assertEquals(5.0, registry.find("interp.replay.messages").tag("source", "db").counter()!!.count())
+        assertEquals(5.0, replayed("db"))
+        // The ring entries are already in the DB result, so they are not counted again.
+        assertEquals(0.0, replayed("buffer"))
+    }
+
+    @Test
+    fun `a failed history read does not leave the listener subscribed`() {
+        val hub = ChannelHub(
+            GatewayProperties(instanceId = "test"),
+            { _, _, _, _ -> throw IllegalStateException("db down") },
+            GatewayMetrics(registry),
+        )
+
+        assertFailsWith<IllegalStateException> { hub.connect(sessionId, Lang.KO, 5, RecordingOutbound()) }
+        assertEquals(0, hub.listenerCount(sessionId, Lang.KO))
     }
 
     @Test

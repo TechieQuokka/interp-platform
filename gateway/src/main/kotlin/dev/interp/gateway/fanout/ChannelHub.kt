@@ -38,21 +38,32 @@ class ChannelHub(
         val channel = channel(sessionId, lang)
         val listener = ListenerConnection(outbound, properties.listenerQueueCapacity, metrics) { channel.unsubscribe(it) }
         val ring = channel.subscribe(listener)
-        if (lastSeq == null) {
-            listener.start(emptyList(), 0)
-            return listener
+        try {
+            listener.start(replay(sessionId, lang, lastSeq, ring), lastSeq ?: 0)
+        } catch (e: Exception) {
+            // The sender never started, so nothing else would ever unsubscribe this listener.
+            channel.unsubscribe(listener)
+            throw e
         }
-        val fromRing = ring.filter { it.seq > lastSeq }
-        val ringCovers = ring.isNotEmpty() && ring.first().seq <= lastSeq + 1
-        val replay = if (ringCovers) {
-            fromRing
-        } else {
-            val fromDb = history.after(sessionId, lang, lastSeq, properties.maxDbReplay)
-            metrics.replayed("db", fromDb.size)
-            (fromDb + fromRing).distinctBy { it.seq }.sortedBy { it.seq }
-        }
-        metrics.replayed("buffer", fromRing.size)
-        listener.start(replay, lastSeq)
         return listener
     }
+
+    private fun replay(sessionId: UUID, lang: Lang, lastSeq: Long?, ring: List<TranslatedText>): List<TranslatedText> {
+        if (lastSeq == null) return emptyList()
+        val fromRing = ring.filter { it.seq > lastSeq }
+        val ringCovers = ring.isNotEmpty() && ring.first().seq <= lastSeq + 1
+        if (ringCovers) {
+            metrics.replayed("buffer", fromRing.size)
+            return fromRing
+        }
+        val fromDb = history.after(sessionId, lang, lastSeq, properties.maxDbReplay)
+        val replay = (fromDb + fromRing).distinctBy { it.seq }.sortedBy { it.seq }
+        metrics.replayed("db", fromDb.size)
+        // Only the ring entries the persister had not written yet; the rest came from the DB.
+        metrics.replayed("buffer", replay.size - fromDb.size)
+        return replay
+    }
+
+    /** Listeners currently subscribed to (session, lang). */
+    internal fun listenerCount(sessionId: UUID, lang: Lang): Int = channel(sessionId, lang).listenerCount()
 }
