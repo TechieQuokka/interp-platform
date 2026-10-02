@@ -16,9 +16,11 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       auto-offset-reset: earliest
+      # A batch is translated in parallel across sessions; its slowest session bounds the batch time.
+      max-poll-records: 200
     listener:
-      # Commit each record only after its translation has been acked (at-least-once).
-      ack-mode: record
+      # Commit a batch only after all of its translations have been acked (at-least-once).
+      ack-mode: batch
 
 server:
   port: 8090

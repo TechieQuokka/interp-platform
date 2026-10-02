@@ -30,6 +30,7 @@ const missing = new Counter('interp_missing_at_end');
 const reconnects = new Counter('interp_reconnects');
 const unexpectedCloses = new Counter('interp_unexpected_closes');
 const utterances = new Counter('interp_utterances');
+const listenersWithData = new Counter('interp_listeners_with_data');
 
 export const options = {
   setupTimeout: '60s',
@@ -54,6 +55,8 @@ export const options = {
     interp_missing_at_end: ['count==0'],
     interp_duplicates: ['count==0'],
     interp_unexpected_closes: ['count==0'],
+    // Every listener must actually receive traffic, otherwise the zero-loss checks prove nothing.
+    interp_listeners_with_data: [`count==${LISTENERS}`],
     'http_req_duration{name:utterance}': ['p(95)<200'],
     'http_req_duration{name:final-check}': ['max>=0'],
   },
@@ -69,14 +72,20 @@ export function setup() {
 }
 
 export function speak(data) {
-  const sessionId = data.sessions[(exec.vu.idInTest - 1) % data.sessions.length];
-  const gateway = GATEWAYS[exec.scenario.iterationInTest % GATEWAYS.length];
-  const res = http.post(
-    `${gateway}/sessions/${sessionId}/utterances`,
-    JSON.stringify({ text: `utterance at ${Date.now()}` }),
-    { headers: { 'Content-Type': 'application/json' }, tags: { name: 'utterance' } },
-  );
-  if (res.status === 202) utterances.add(1);
+  // Rotate by iteration: k6 does not number VUs per scenario, so exec.vu.idInTest cannot map
+  // speakers to sessions (it once left one session silent and doubled up another).
+  const sessionId = data.sessions[exec.scenario.iterationInTest % data.sessions.length];
+  const body = JSON.stringify({ utteranceId: crypto.randomUUID(), text: `utterance at ${Date.now()}` });
+  // Retries reuse the utteranceId, so an attempt that timed out but was committed is not duplicated.
+  for (let attempt = 0; attempt < GATEWAYS.length; attempt++) {
+    const gateway = GATEWAYS[(exec.scenario.iterationInTest + attempt) % GATEWAYS.length];
+    const res = http.post(`${gateway}/sessions/${sessionId}/utterances`, body,
+      { headers: { 'Content-Type': 'application/json' }, tags: { name: 'utterance' } });
+    if (res.status === 202) {
+      utterances.add(1);
+      break;
+    }
+  }
   sleep(UTTER_INTERVAL_S);
 }
 
@@ -126,6 +135,7 @@ export function listen(data) {
       } else {
         const lastSeq = http.get(`${gateway}/sessions/${sessionId}`, { tags: { name: 'final-check' } }).json('lastSeq');
         if (lastSeq > last) missing.add(lastSeq - last);
+        if (last > 0) listenersWithData.add(1);
       }
     };
   };
