@@ -2,8 +2,8 @@
 
 ## Stack
 - **Spring MVC + virtual threads, not WebFlux.** Blocking code that reads top to bottom, while
-  still handling thousands of connections. The load test bears this out: 6,000 WebSocket listeners
-  run on 2 gateways.
+  still handling thousands of connections. The load tests bear this out: 12,000 WebSocket listeners
+  run on 2 gateways before fan-out p99 reaches 200 ms (test-report T3a).
 - **JPA where it fits, JDBC where it does not.** JPA is used for session creation and replay reads.
   The seq counter is a single `UPDATE ... RETURNING` through `JdbcClient`, because JPA would need
   read-lock-write (2 round trips) for the same thing. `SessionEntity` implements `Persistable` so
@@ -23,15 +23,13 @@
     the new seq) and the original seq comes back with `duplicate: true`. Nothing is published again.
   - Server waits are bounded so clients get a fast 503 instead of hanging: Kafka `max.block.ms`
     3 s, `delivery.timeout.ms` 4 s, Hikari `connection-timeout` 3 s.
-  - Residual risk, not addressed: if the DB commit fails *after* Kafka acked, a published seq is
-    reused by the next utterance. Closing that needs a transactional outbox, which was judged out of
-    scope.
 - **Seq comes from a Postgres counter.** It is allocated and published in one transaction. If the
   Kafka send fails, the increment rolls back, so a failed ingest leaves no gap. The row lock
   serializes concurrent ingests for the same session, and any gateway can accept the speaker.
-  - Remaining risk: the commit could fail after Kafka has acked. The next utterance would then reuse
-    that seq, and the gateway would drop it as a duplicate. This was accepted as very unlikely and
-    is documented rather than engineered away.
+  - Residual risk, not addressed: the DB commit could fail *after* Kafka has acked. The next
+    utterance would then reuse that seq, and the gateway would drop it as a duplicate. Closing this
+    needs a transactional outbox, which was judged out of scope; it is documented rather than
+    engineered away because it needs Postgres to fail between the Kafka ack and the commit.
 - **Delivery is at-least-once, with dedupe by seq.** The worker commits a batch's offsets only
   after all of its output is acked (`ack-mode: batch`). The gateway keeps a per-(session, lang) watermark, drops
   `seq <= last`, and counts `seq > last + 1` as a gap. The persister uses `ON CONFLICT DO NOTHING`.
@@ -56,8 +54,10 @@
     key→partition on a live topic. Also chosen over the Confluent Parallel Consumer, an extra
     non-Spring dependency.
   - Verified by `ParallelTranslationIT`: 4 sessions × 5 records forced into one partition finish
-    well under the 6 s that sequential processing needs, each session in order. Not yet re-measured
-    under load (T3b).
+    well under the 6 s that sequential processing needs, each session in order. Re-measured under load
+    afterwards (test-report, *T3b re-run*): at 100 sessions (50 msg/s per language) e2e p99 is
+    2.1 s with no backlog, against 92 s and a growing backlog before. The price is a median
+    that grows with load (0.5 s → 1.2 s), because the next poll waits for the batch's slowest session.
 
 ## Fan-out
 - **Raw WebSocket, no STOMP.** The protocol is one-way and tiny:
@@ -72,6 +72,9 @@
   2. If the snapshot does not reach back to `lastSeq + 1`, read the rest from Postgres.
   3. The sender skips any `seq <= lastSent`, so where replay and live traffic overlap, nothing is
      sent twice.
+  4. If building the replay fails (Postgres down), the listener is unsubscribed again before the
+     error closes the socket. A code review during wrap-up found that it used to stay subscribed
+     forever, because only its sender thread, which never started, unsubscribes it.
 - **Known limits, accepted for the scope:**
   - Channels are never evicted from memory.
   - When a fresh gateway replays from the DB, the persister's lag can leave a short gap. The client
@@ -105,3 +108,6 @@
    campaign by checking `last_seq` per session in the DB, then fixed and documented.
 10. **Stated the wrong finish time for the soak test** (21:20 instead of about 22:20). Corrected
    when asked.
+11. **Started the T3b re-run before the gateways were serving.** The health check printed nothing
+   and that went unnoticed, so the first k6 run failed in `setup()` (session creation). It was
+   rerun once the gateways were up.

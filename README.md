@@ -1,5 +1,7 @@
 # interp — real-time interpretation fan-out pipeline
 
+[![build](https://github.com/TechieQuokka/interp-platform/actions/workflows/build.yml/badge.svg)](https://github.com/TechieQuokka/interp-platform/actions/workflows/build.yml)
+
 Speaker text → translation workers → thousands of multilingual listeners, built to verify
 **latency, ordering and no-loss**. Translation itself is mocked; the pipeline is the point.
 
@@ -18,9 +20,13 @@ listeners ◀──WebSocket── gateway-1 / gateway-2 ◀── own consumer 
   p99 is 163 ms at 8k and 217 ms at 12k, so the 200 ms SLO knee is at about 12k.
 - **60-min soak** with 3,000 listeners: 5.37M messages, 0 errors, fan-out p99 28 ms, flat heap.
 - **Fault injection** (worker, gateway, Kafka and Postgres kills): no loss in any scenario.
+- **Worker scaling:** with 100 sessions speaking (50 msg/s per language), e2e p99 is 2.1 s with no
+  backlog, against 92 s and a growing backlog before sessions were translated in parallel.
 - Details: [docs/test-report.md](docs/test-report.md). The earlier
   [load-test-results.md](docs/load-test-results.md) overstated its listener counts; see the
   correction there.
+
+![Grafana dashboard during the worker re-run: 30, 100 and 3 sessions](docs/images/grafana.png)
 
 ## Modules
 | Module | Role |
@@ -59,3 +65,15 @@ curl -X POST localhost:8081/sessions/$SID/utterances \
 docker run --rm --network host -v "$PWD/loadtest:/scripts" grafana/k6:2.3.0 run \
   -e LISTENERS=3000 /scripts/fanout.js
 ```
+
+## Scope and known limits
+This is a local test bed for pipeline behaviour, not a production deployment:
+- No authentication on the REST or WebSocket endpoints, and WebSocket origins are `*`.
+- Grafana runs with anonymous Admin access, and dev credentials are hard-coded in config.
+- Single Kafka broker with replication factor 1; translation is a mock with a random delay.
+- Accepted limits, each explained in [docs/decisions.md](docs/decisions.md): a worker crash stalls
+  its language for about 45 s (consumer session timeout); a commit failure right after the Kafka
+  ack can reuse a seq (no outbox); per-session channels are never evicted from gateway memory.
+
+## License
+[MIT](LICENSE)

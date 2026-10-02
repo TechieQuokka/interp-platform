@@ -51,4 +51,5 @@ sequentially per partition). The fan-out row isolates what the gateway adds.
   the 10-connection Hikari pool. The speaker path does not hit this because it runs at about 1.5 req/s.
 - **Per-partition sequential translation caps throughput per session** at about 1 / mean delay ≈ 2.2 msg/s.
   Sessions that hash to the same partition share that budget. This is why the test uses 3 sessions
-  at 0.5 msg/s each.
+  at 0.5 msg/s each. *Superseded:* the worker now translates the sessions of a batch in parallel;
+  see *T3b re-run* in [test-report.md](test-report.md).

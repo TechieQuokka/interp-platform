@@ -205,8 +205,10 @@ Two findings were fixed in code afterwards; [decisions.md](decisions.md) has the
 | Finding | Fix | Verified by |
 |---|---|---|
 | 1. Ambiguous ingest outcome | Idempotency key `utteranceId` (Flyway V2 `utterance` table); bounded producer/Hikari waits; 503 on Kafka/DB unavailability | `IngestIdempotencyIT`, `SessionControllerTest`, T1-3/T1-4 re-run below |
-| 3. Worker cap of about 13 msg/s per language | Batches split by session; sessions translated in parallel, each in order | `ParallelTranslationIT` (integration only; T3b **not re-measured**) |
+| 3. Worker cap of about 13 msg/s per language | Batches split by session; sessions translated in parallel, each in order | `ParallelTranslationIT`, T3b re-run below |
 | 4. k6 speaker→session mapping | Rotate sessions by iteration; threshold `listeners_with_data == LISTENERS`; retries reuse `utteranceId` | Used in the re-runs below |
+| 6. Replay metric double-counts | On the DB path, `source="buffer"` counts only ring entries the DB result did not have | `ChannelHubTest` |
+| New (code review): listener leak when the replay read fails | The listener is unsubscribed again if building its replay throws | `ChannelHubTest` |
 
 ### T1-3 / T1-4 re-run with idempotent retries
 Speakers retry a failed post with the **same** `utteranceId` (up to 8 attempts, 1 s apart).
@@ -226,5 +228,30 @@ Speakers retry a failed post with the **same** `utteranceId` (up to 8 attempts, 
   503s take up to the 3 s bounds.
 - New observation in the T1-3 re-run: fan-out p99 was 2.1 s (max 2.6 s), against 16 ms in the earlier
   run. Translations produced while the broker was coming back carry a `translatedAtMs` from before
-  their delayed send, so the metric includes the broker outage. This was not investigated further
-  because testing was stopped here.
+  their delayed send, so the metric includes the broker outage. The code confirms this:
+  `TranslationWorker` stamps `translatedAtMs` before `kafka.send()`, so the wait in the worker's
+  producer is counted as fan-out. It is a property of the metric, not a gateway slowdown; the
+  field's KDoc now says so.
+
+### T3b re-run after the worker fix (2026-10-03)
+Same shape as T3b: 1,000 listeners, every session gets 1 utterance every 2 s for 120 s, using the
+repository's `loadtest/fanout.js` (`SESSIONS=3/30/100`, 15 s drain).
+
+| Sessions | Offered per language | e2e p50 / p99 / max before | e2e p50 / p99 / max after | Undelivered at test end | Fan-out p99 |
+|---:|---:|---|---|---:|---:|
+| 3 | 1.5 msg/s | 0.5 s / 1.5 s / 1.6 s | 0.50 s / 1.35 s / 1.51 s | 0 | 20 ms |
+| 30 | 15 msg/s | 4.7 s / 24.8 s / 26.6 s | 0.97 s / 1.97 s / 2.26 s | 0 (was 5,040) | 36 ms |
+| 100 | 50 msg/s | 46 s / 92 s / 97 s | 1.20 s / 2.09 s / 2.35 s | 0 (was 16,935) | 10 ms |
+
+- Every run passed all thresholds: 0 gaps, duplicates, missing or unexpected closes, and all 1,000
+  listeners received data (60,000 messages per run). Speaker ingest p95 stayed at 15–27 ms.
+- The database held exactly 7,980 utterances × 3 languages = 23,940 rows for the 133 sessions,
+  with 0 incomplete (session, lang) channels.
+- Worker throughput now follows the offered load (15 and then 50 translations/s per language on the
+  dashboard) instead of flattening at about 13 msg/s.
+- The median rises with load (0.5 s → 1.2 s), most likely because the next poll waits until the
+  slowest session of the current batch finishes, so newly arrived records queue behind it. With more
+  sessions per batch, that slowest delay is more often near the 800 ms maximum. The latency stays
+  bounded, which the old design did not achieve above about 26 sessions.
+- Not measured: the new ceiling. Latency was still flat at 100 sessions, so it lies higher, but
+  this run did not look for it.
