@@ -198,3 +198,33 @@ Conclusion:
 
 Correctness held in every scenario: across about 6.5M client-checked messages, there was no
 gap, no duplicate, no reorder, and no loss after drain.
+
+## Fixes applied after the campaign
+Two findings were fixed in code afterwards; [decisions.md](decisions.md) has the design.
+
+| Finding | Fix | Verified by |
+|---|---|---|
+| 1. Ambiguous ingest outcome | Idempotency key `utteranceId` (Flyway V2 `utterance` table); bounded producer/Hikari waits; 503 on Kafka/DB unavailability | `IngestIdempotencyIT`, `SessionControllerTest`, T1-3/T1-4 re-run below |
+| 3. Worker cap of about 13 msg/s per language | Batches split by session; sessions translated in parallel, each in order | `ParallelTranslationIT` (integration only; T3b **not re-measured**) |
+| 4. k6 speaker→session mapping | Rotate sessions by iteration; threshold `listeners_with_data == LISTENERS`; retries reuse `utteranceId` | Used in the re-runs below |
+
+### T1-3 / T1-4 re-run with idempotent retries
+Speakers retry a failed post with the **same** `utteranceId` (up to 8 attempts, 1 s apart).
+
+| Run | Accepted utterances | Sum of `last_seq` | `utterance` rows | 503s | Ingest max | Gaps / dups / missing |
+|---|---:|---:|---:|---:|---:|---|
+| T1-3 before (Kafka stop) | 114 (+3 "failed") | 117 | — | 0 | 10 s (client timeout) | 0 / 0 / 0 |
+| T1-3 after | 114 | **114** | 114 | 9 | 4.0 s | 0 / 0 / 0 |
+| T1-4 before (Postgres stop) | 120 (+3 "failed") | 123 | — | 0 | 10 s (client timeout) | 0 / 0 / 0 |
+| T1-4 after | 120 | **120** | 120 | 6 | 3.0 s | 0 / 0 / 0 |
+
+- After the fix, the count of seqs issued equals the count of accepted utterances, so no stray
+  seqs remain. Outages surface as fast 503s, which the client retries safely.
+- Neither re-run hit an attempt that had committed before the client gave up
+  (`retry_was_committed` = 0). That path is covered by `IngestIdempotencyIT` instead.
+- **Ingest p95 still breaks its 100 ms SLO while an outage lasts** (p95 2–3 s), as expected: the
+  503s take up to the 3 s bounds.
+- New observation in the T1-3 re-run: fan-out p99 was 2.1 s (max 2.6 s), against 16 ms in the earlier
+  run. Translations produced while the broker was coming back carry a `translatedAtMs` from before
+  their delayed send, so the metric includes the broker outage. This was not investigated further
+  because testing was stopped here.

@@ -1,5 +1,13 @@
 # Load test results
 
+> **Correction (2026-10-02):** the k6 script used for these runs mapped speakers to sessions with
+> `exec.vu.idInTest`. As a result, one of the 3 sessions never received an utterance, and about a third of
+> the listeners got no messages. The zero-loss result holds for the listeners that did receive
+> traffic, but the effective listener counts were about 2/3 of the numbers below. The script has
+> since been fixed (sessions rotate by iteration; every listener must receive data). Corrected
+> measurements with a fixed client are in [test-report.md](test-report.md) (T3a: 4k / 8k / 12k
+> listeners). The numbers below were not re-measured.
+
 Run on 2026-10-02 with `loadtest/fanout.js` against the full `docker/compose.yaml` stack
 (2 gateways, 3 workers, persister, Kafka, Postgres). The stack and k6 shared one machine:
 Intel i3-14100F (4 cores / 8 threads), 23 GiB RAM.

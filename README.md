@@ -13,10 +13,14 @@ listeners ◀──WebSocket── gateway-1 / gateway-2 ◀── own consumer 
                           ring buffer + Postgres replay on reconnect)
 ```
 
-## Results (6,000 listeners, 2 gateways, one 4-core machine)
-- 360,060 messages and 13,828 reconnect-with-replay cycles: **0 gaps, 0 duplicates, 0 missing**.
-- Gateway fan-out latency (translated → client): p50 24 ms / p95 44 ms / p99 120 ms.
-- Details and findings are in [docs/load-test-results.md](docs/load-test-results.md).
+## Results (2 gateways, one 4-core machine, k6 on the same box)
+- Up to **12,000 listeners**: 360,000 messages, **0 gaps, 0 duplicates, 0 missing**. Fan-out
+  p99 is 163 ms at 8k and 217 ms at 12k, so the 200 ms SLO knee is at about 12k.
+- **60-min soak** with 3,000 listeners: 5.37M messages, 0 errors, fan-out p99 28 ms, flat heap.
+- **Fault injection** (worker, gateway, Kafka and Postgres kills): no loss in any scenario.
+- Details: [docs/test-report.md](docs/test-report.md). The earlier
+  [load-test-results.md](docs/load-test-results.md) overstated its listener counts; see the
+  correction there.
 
 ## Modules
 | Module | Role |
@@ -44,7 +48,9 @@ docker compose -f docker/compose.yaml --profile apps up -d --build
 ```bash
 curl -X POST localhost:8081/sessions                                   # {"sessionId": "..."}
 curl -X POST localhost:8081/sessions/$SID/utterances \
-     -H 'Content-Type: application/json' -d '{"text":"hello"}'         # {"seq": 1, ...}
+     -H 'Content-Type: application/json' \
+     -d '{"utteranceId":"'$(uuidgen)'","text":"hello"}'                 # {"seq": 1, "duplicate": false, ...}
+# Retrying with the same utteranceId returns the original seq ("duplicate": true); 503 = safe to retry.
 # Listener (any gateway): ws://localhost:8082/ws/listen?session=$SID&lang=ko[&lastSeq=N]
 ```
 
