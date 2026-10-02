@@ -15,6 +15,7 @@ dependencyManagement {
 dependencies {
     api("tools.jackson.module:jackson-module-kotlin")
     api("org.jetbrains.kotlin:kotlin-reflect")
+    compileOnly("org.springframework.kafka:spring-kafka")
 
     testFixturesApi("org.springframework.boot:spring-boot-test")
     testFixturesApi("org.springframework.boot:spring-boot-testcontainers")

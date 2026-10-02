@@ -1,0 +1,28 @@
+spring:
+  application:
+    name: persister
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: jdbc:postgresql://localhost:5432/interp
+    username: interp
+    password: interp
+  kafka:
+    bootstrap-servers: localhost:9094
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+      max-poll-records: 500
+    listener:
+      type: batch
+
+server:
+  port: 8095
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus

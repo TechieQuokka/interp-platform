@@ -1,0 +1,124 @@
+name: interp
+
+x-app-env: &app-env
+  SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/interp
+
+services:
+  kafka:
+    image: apache/kafka:4.3.1
+    ports:
+      - "9094:9094"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
+  postgres:
+    image: postgres:18.6
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: interp
+      POSTGRES_USER: interp
+      POSTGRES_PASSWORD: interp
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql (not .../data).
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U interp -d interp"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  gateway-1: &gateway
+    build: { context: .., dockerfile: docker/Dockerfile, args: { MODULE: gateway } }
+    image: interp/gateway
+    ports:
+      - "8081:8080"
+    environment:
+      <<: *app-env
+      INTERP_GATEWAY_INSTANCE_ID: gateway-1
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    profiles: [apps]
+
+  gateway-2:
+    <<: *gateway
+    ports:
+      - "8082:8080"
+    environment:
+      <<: *app-env
+      INTERP_GATEWAY_INSTANCE_ID: gateway-2
+
+  worker-ko: &worker
+    build: { context: .., dockerfile: docker/Dockerfile, args: { MODULE: worker } }
+    image: interp/worker
+    environment:
+      <<: *app-env
+      INTERP_WORKER_LANG: ko
+    depends_on:
+      kafka: { condition: service_healthy }
+    profiles: [apps]
+
+  worker-en:
+    <<: *worker
+    environment:
+      <<: *app-env
+      INTERP_WORKER_LANG: en
+
+  worker-ja:
+    <<: *worker
+    environment:
+      <<: *app-env
+      INTERP_WORKER_LANG: ja
+
+  persister:
+    build: { context: .., dockerfile: docker/Dockerfile, args: { MODULE: persister } }
+    image: interp/persister
+    environment:
+      <<: *app-env
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    profiles: [apps]
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    profiles: [apps]
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    profiles: [apps]
+
+volumes:
+  pgdata:

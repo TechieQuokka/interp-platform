@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: gateway
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["gateway-1:8080", "gateway-2:8080"]
+  - job_name: worker
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["worker-ko:8090", "worker-en:8090", "worker-ja:8090"]
+  - job_name: persister
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["persister:8095"]

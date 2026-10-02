@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: interp
+    folder: Interp
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
