@@ -21,6 +21,12 @@ class IngestService(
     @Transactional
     fun createSession(): UUID = sessions.save(SessionEntity(UUID.randomUUID())).id
 
+    @Transactional(readOnly = true)
+    fun find(sessionId: UUID): SessionResponse =
+        sessions.findById(sessionId)
+            .map { SessionResponse(it.id, it.lastSeq) }
+            .orElseThrow { SessionNotFoundException(sessionId) }
+
     /**
      * Allocates the seq and publishes inside one transaction: if the Kafka send fails, the seq
      * increment is rolled back, so a failed ingest never leaves a permanent gap.

@@ -5,6 +5,7 @@ import jakarta.validation.constraints.NotBlank
 import jakarta.validation.constraints.Size
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.annotation.ExceptionHandler
+import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -14,6 +15,8 @@ import org.springframework.web.bind.annotation.RestController
 import java.util.UUID
 
 data class CreateSessionResponse(val sessionId: UUID)
+
+data class SessionResponse(val sessionId: UUID, val lastSeq: Long)
 
 data class UtteranceRequest(
     @field:NotBlank
@@ -30,6 +33,10 @@ class SessionController(private val ingest: IngestService) {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     fun create(): CreateSessionResponse = CreateSessionResponse(ingest.createSession())
+
+    /** Lets clients (and the load test) check how many utterances a session has. */
+    @GetMapping("/{sessionId}")
+    fun get(@PathVariable sessionId: UUID): SessionResponse = ingest.find(sessionId)
 
     @PostMapping("/{sessionId}/utterances")
     @ResponseStatus(HttpStatus.ACCEPTED)
